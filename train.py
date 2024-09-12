@@ -1,6 +1,59 @@
 import pandas as pd
+from sklearn.impute import KNNImputer 
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.model_selection import KFold
+import pickle
+
 
 ######################## PART 1 #####################################################
+# 1. Time difference between peak after meal
+def time_difference(record, start_index):
+    filtered_record = record.iloc[:, start_index:]
+    max_indices = filtered_record.idxmax(axis=1)
+    column_positions = max_indices.map(lambda col: record.columns.get_loc(col))
+    result = (column_positions - start_index) * 5
+    return pd.DataFrame(result, columns=['time difference'])
+
+# feature 2: glucose level difference after the meal (max glucose level - min glucose level)
+def glucose_level_difference(record, start_index):
+    max_indices = record.max(axis=1)
+    meal_indices = record.iloc[:, start_index]
+    result = (max_indices - meal_indices) / meal_indices
+    return pd.DataFrame(result, columns=['glucose level difference'])
+
+
+# 2. perform KNN to predict missing values
+def knn_imputer(record):
+    imputer = KNNImputer(n_neighbors=2)
+
+    return pd.DataFrame(imputer.fit_transform(record), columns=record.columns)
+
+# 1. Get rid of rows thats mising more that 5% of the data
+def rid_rows_threshold(record):
+    threshold = 0.05 # 5%
+    empty_cell_count = record.isna().sum(axis=1)
+    total_cells = record.shape[1]
+    rows_to_keep = empty_cell_count / total_cells < threshold
+    return record[rows_to_keep]
+
+# Decision Tree
+def decisionTree(record):
+    X = record.drop('target', axis=1)
+    y = record['target']
+
+    kf = KFold(n_splits=10, shuffle=True, random_state=42)
+
+    tree = DecisionTreeClassifier()
+
+    for train_index, test_index in kf.split(X):
+        X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+        y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+
+        tree.fit(X_train, y_train)
+    
+    with open('decision_tree_model.pkl', 'wb') as file:
+        pickle.dump(tree, file)
+
 def getTrainingData(insulin_csv, cgm_csv):
     insulin_columns_to_read = ['Date', 'Time', 'BWZ Carb Input (grams)']
     df_insulin = pd.read_csv(insulin_csv, usecols=insulin_columns_to_read)
@@ -111,7 +164,46 @@ def getTrainingData(insulin_csv, cgm_csv):
 
     return meal_data, no_meal_data
 
-meal_data, no_meal_data = getTrainingData('InsulinData.csv', 'CGMData.csv')
-meal_data_1, no_meal_data_1 = getTrainingData('Insulin_patient2.csv', 'CGM_patient2.csv')
-print(meal_data_1.head(5))
-    ######################## PART 2 #####################################################
+meal_data, no_meal_data = getTrainingData('./DataMining_Machine_Model_Training/InsulinData.csv', './DataMining_Machine_Model_Training/CGMData.csv')
+meal_data_1, no_meal_data_1 = getTrainingData('./DataMining_Machine_Model_Training/Insulin_patient2.csv', './DataMining_Machine_Model_Training/CGM_patient2.csv')
+
+meal_data = pd.concat([meal_data, meal_data_1], axis=0, ignore_index=True)
+no_meal_data = pd.concat([no_meal_data, no_meal_data_1], axis=0, ignore_index=True)
+
+del meal_data_1
+del no_meal_data_1
+
+meal_data.reset_index(drop=True, inplace=True)
+no_meal_data.reset_index(drop=True, inplace=True)
+
+# Handling Missing data
+meal_data = rid_rows_threshold(meal_data)
+no_meal_data = rid_rows_threshold(no_meal_data)
+
+# performing knn for 1st column is a bad idea because knn = 2
+meal_data = meal_data.dropna(subset=['col1'])
+no_meal_data = no_meal_data.dropna(subset=['col1'])
+
+meal_data = knn_imputer(meal_data)
+no_meal_data = knn_imputer(no_meal_data)
+
+########################### Feature Extraction #####################################
+time_difference_meal = time_difference(meal_data, 5)
+time_difference_no_meal = time_difference(no_meal_data, 0)
+
+# Decision tree (Feature 1: time difference)
+time_difference_meal['target'] = 1
+time_difference_no_meal['target'] = 0
+
+time_difference_data = pd.concat([time_difference_meal, time_difference_no_meal], axis=0)
+
+# feature 2: glucose level difference
+glucose_level_difference_meal = glucose_level_difference(meal_data, 5)
+glucose_level_difference_no_meal = glucose_level_difference(no_meal_data, 0)
+
+glucose_level_difference_meal['target'] = 1
+glucose_level_difference_no_meal['target'] = 0
+
+glucose_level_difference_data = pd.concat([glucose_level_difference_meal, glucose_level_difference_no_meal])
+final_data = pd.concat([time_difference_data, glucose_level_difference_data], axis=1)
+decisionTree(final_data)
